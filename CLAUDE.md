@@ -111,24 +111,38 @@ poetry run ruff check .
 
 ### Docker Commands
 
+**Note:** If you get permission denied errors, add your user to the docker group:
 ```bash
-# Start all services (PostgreSQL, ChromaDB, Ollama)
+sudo usermod -aG docker $USER
+# Then log out and log back in
+```
+
+```bash
+# Start all services (db, vector_db, backend, frontend)
 docker compose up -d
+
+# Build and start all services
+docker compose up -d --build
 
 # View logs
 docker compose logs -f
 
 # View logs for specific service
-docker compose logs -f postgres
+docker compose logs -f backend
 
 # Stop services
 docker compose down
 
-# Rebuild and restart
-docker compose up -d --build
-
 # Check service status
 docker compose ps
+
+# Access services:
+# - Backend API: http://localhost:8001
+# - Backend health: http://localhost:8001/health
+# - Backend docs: http://localhost:8001/docs
+# - Frontend: http://localhost:3000
+# - ChromaDB: http://localhost:8000
+# - PostgreSQL: localhost:5432
 ```
 
 ### Git Workflow

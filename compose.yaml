@@ -1,32 +1,61 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:15
+  db:
+    image: postgres:15-alpine
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: cherrypick
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cherrypick}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  chromadb:
+  vector_db:
     image: chromadb/chroma:latest
     ports:
-      - "8000:8000"
+      - "${CHROMA_PORT:-8000}:8000"
     volumes:
-      - chroma_data:/chroma/chroma
+      - ./docker/chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=${CHROMA_TELEMETRY:-TRUE}
 
-  ollama:
-    image: ollama/ollama:latest
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
     ports:
-      - "11434:11434"
+      - "${BACKEND_PORT:-8001}:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-cherrypick}
+      - CHROMA_HOST=vector_db
+      - CHROMA_PORT=8000
+    depends_on:
+      db:
+        condition: service_healthy
+      vector_db:
+        condition: service_started
     volumes:
-      - ollama_data:/root/.ollama
+      - ./apps/backend:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-volumes:
-  postgres_data:
-  chroma_data:
-  ollama_data:
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./apps/frontend:/app
+      - /app/node_modules

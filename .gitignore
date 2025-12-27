@@ -64,3 +64,8 @@ Thumbs.db
 # Database
 *.sqlite
 *.db
+
+# Docker data directories
+docker/postgres_data/*
+docker/chroma_data/*
+!docker/.gitkeep
