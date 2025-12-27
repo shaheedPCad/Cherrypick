@@ -1,0 +1,9 @@
+{
+  "name": "@cherrypick/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cherrypick Frontend Dashboard - Next.js App Router",
+  "scripts": {},
+  "dependencies": {},
+  "devDependencies": {}
+}
