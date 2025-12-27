@@ -40,6 +40,8 @@ services:
       - CHROMA_URL=http://vector_db:8000
       - FRONTEND_CORS_ORIGIN=http://localhost:3000
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

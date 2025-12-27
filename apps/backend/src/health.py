@@ -57,7 +57,7 @@ async def check_chromadb(base_url: str) -> ServiceHealth:
     try:
         async with asyncio.timeout(2.0):
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{base_url}/api/v1/heartbeat")
+                response = await client.get(f"{base_url}/api/v2/heartbeat")
                 if response.status_code == 200:
                     latency = (time.perf_counter() - start) * 1000
                     return ServiceHealth(
