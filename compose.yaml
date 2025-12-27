@@ -37,6 +37,9 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-cherrypick}
       - CHROMA_HOST=vector_db
       - CHROMA_PORT=8000
+      - CHROMA_URL=http://vector_db:8000
+      - FRONTEND_CORS_ORIGIN=http://localhost:3000
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
     depends_on:
       db:
         condition: service_healthy
