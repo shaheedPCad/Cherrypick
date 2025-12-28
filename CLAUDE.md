@@ -36,6 +36,49 @@ The following official Claude Code plugins are enabled:
 
 When working on features or issues, check Plane for current tasks and update issue status accordingly using the Plane MCP server tools.
 
+## Development Progress
+
+### ✅ Foundation & Infrastructure Cycle (COMPLETE)
+
+The Foundation & Infrastructure cycle has been completed and merged to main. All core infrastructure is now in place:
+
+**Completed Tickets:**
+- ✅ CP-7: Monorepo & Folder Initialization
+  - Professional monorepo structure with pnpm workspace
+  - Backend: Poetry + Python 3.11
+  - Frontend: Next.js (App Router) - initialized
+
+- ✅ CP-8: Docker Orchestration for Self-Hosting
+  - Docker Compose configuration with 4 services
+  - PostgreSQL 15 (Alpine) with health checks
+  - ChromaDB (persistent vector store)
+  - Backend (FastAPI with Typst support)
+  - Frontend (Next.js) - ready for development
+
+- ✅ CP-9: Relational Schema Design (SQLAlchemy 2.0)
+  - Core models: Experience, BulletPoint, Project, ProjectBulletPoint, Education, Job
+  - Full async patterns with SQLAlchemy 2.0
+  - Type-safe with Mapped[] annotations
+  - Strategic indexes for performance
+  - ChromaDB integration ready (embedding_id fields)
+
+- ✅ CP-10: Environment & Config Management
+  - Pydantic Settings for configuration
+  - CORS middleware for frontend integration
+  - Comprehensive health check system
+  - Timeout protection (2s per service)
+  - Concurrent health checks with graceful degradation
+
+**Infrastructure Status:**
+- Database: ✅ PostgreSQL with async SQLAlchemy 2.0
+- Vector Store: ✅ ChromaDB v2 API
+- LLM: ✅ Ollama integration ready
+- Config: ✅ Environment-based with .env support
+- Health: ✅ Cross-service monitoring endpoint
+- CORS: ✅ Frontend security configured
+
+**Next Cycle:** Core Engine (Resume Assembly + RAG)
+
 ## Engineering Standards & Tech Stack
 
 ### 1. Project Architecture (Monorepo)
