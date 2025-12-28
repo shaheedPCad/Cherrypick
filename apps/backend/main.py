@@ -1,7 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,9 @@ from src.config import settings
 from src.database import close_db, get_db, init_db
 from src.health import ServiceHealth, check_chromadb, check_ollama, check_postgres
 from src.models import Experience
+from src.schemas.resume import ResumeIngestRequest, ResumeIngestResponse
+from src.services.normalizer import normalize_bullet_points
+from src.services.parser import OllamaClient, extract_resume_structure, persist_resume
 
 
 @asynccontextmanager
@@ -95,3 +99,97 @@ async def db_test(db: AsyncSession = Depends(get_db)):
         "experience_count": len(experiences),
         "message": "Database connection successful",
     }
+
+
+@app.post("/api/v1/ingest/resume", response_model=ResumeIngestResponse, status_code=201)
+async def ingest_resume(
+    request: ResumeIngestRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Parse and ingest a resume from raw text.
+
+    Extracts structured data using Llama 3 via Ollama, normalizes bullet points
+    to action-verb format, and persists to PostgreSQL.
+
+    Args:
+        request: Resume ingestion request with raw_text
+        db: Database session
+
+    Returns:
+        Resume ingestion summary with counts and ID
+
+    Raises:
+        HTTPException: On parsing, normalization, or database errors
+    """
+    try:
+        # Step 1: Initialize Ollama client
+        ollama = OllamaClient()
+
+        # Step 2: Extract structure from resume
+        parsed = await extract_resume_structure(request.raw_text, ollama)
+
+        # Step 3: Collect all bullet points for normalization
+        all_bullets = []
+        for exp in parsed.experiences:
+            all_bullets.extend(exp.bullet_points)
+        for proj in parsed.projects:
+            all_bullets.extend(proj.bullet_points)
+
+        # Step 4: Normalize all bullet points in batch
+        if all_bullets:
+            normalized_bullets = await normalize_bullet_points(all_bullets, ollama)
+
+            # Step 5: Replace bullet points with normalized versions
+            bullet_index = 0
+            for exp in parsed.experiences:
+                count = len(exp.bullet_points)
+                exp.bullet_points = normalized_bullets[bullet_index:bullet_index + count]
+                bullet_index += count
+
+            for proj in parsed.projects:
+                count = len(proj.bullet_points)
+                proj.bullet_points = normalized_bullets[bullet_index:bullet_index + count]
+                bullet_index += count
+
+        # Step 6: Persist to database
+        exp_count, edu_count, proj_count, total_bullets = await persist_resume(
+            parsed, db
+        )
+
+        # Step 7: Generate resume ID
+        # TODO: Create a Resume table to store resume metadata
+        # For now, use first experience ID as proxy, or generate UUID
+        result = await db.execute(
+            select(Experience).order_by(Experience.created_at.desc()).limit(1)
+        )
+        latest_exp = result.scalar_one_or_none()
+        resume_id = latest_exp.id if latest_exp else uuid4()
+
+        return ResumeIngestResponse(
+            resume_id=resume_id,
+            experience_count=exp_count,
+            education_count=edu_count,
+            project_count=proj_count,
+            total_bullet_points=total_bullets,
+            message="Resume ingested successfully"
+        )
+
+    except ValueError as e:
+        # Parsing or validation errors
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to parse resume: {str(e)}"
+        )
+    except asyncio.TimeoutError:
+        # Ollama timeout
+        raise HTTPException(
+            status_code=504,
+            detail="Resume parsing timed out. Please try again or reduce resume length."
+        )
+    except Exception as e:
+        # Log the full error for debugging
+        print(f"ERROR: Resume ingestion failed: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error during resume ingestion: {str(e)}"
+        )
