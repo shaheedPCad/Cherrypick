@@ -125,6 +125,36 @@ def extract_json_from_response(response: str) -> dict[str, Any]:
     )
 
 
+def validate_atomic_bullets(parsed: ParsedResume) -> None:
+    """Validate that bullet points are atomic (one accomplishment each).
+
+    Logs warnings for bullets that appear to contain multiple accomplishments.
+    """
+    compound_patterns = [
+        r'\band\s+(?:also\s+)?(?:implemented|developed|led|managed|created|designed)',
+        r'\bwhile\s+(?:also\s+)?(?:implementing|developing|leading|managing|creating)',
+        r'\balso\s+(?:implemented|developed|led|managed|created|designed)',
+        r';.*(?:implemented|developed|led|managed|created|designed)',
+    ]
+
+    all_bullets = []
+    for exp in parsed.experiences:
+        all_bullets.extend(exp.bullet_points)
+    for proj in parsed.projects:
+        all_bullets.extend(proj.bullet_points)
+
+    non_atomic_count = 0
+    for bullet in all_bullets:
+        for pattern in compound_patterns:
+            if re.search(pattern, bullet, re.IGNORECASE):
+                print(f"WARNING: Potentially non-atomic bullet: {bullet[:100]}")
+                non_atomic_count += 1
+                break
+
+    if non_atomic_count > 0:
+        print(f"WARNING: {non_atomic_count} potentially non-atomic bullets detected.")
+
+
 async def extract_resume_structure(
     raw_text: str,
     ollama: OllamaClient
@@ -145,7 +175,23 @@ async def extract_resume_structure(
         ValueError: On extraction or validation failure
         asyncio.TimeoutError: If Ollama request times out
     """
-    prompt = f"""You are a resume parser. Extract the following information from the resume below and return ONLY a JSON object (no additional text).
+    prompt = f"""You are a resume parser. Extract structured information and return ONLY a JSON object.
+
+CRITICAL INSTRUCTION - Atomic Bullet Point Separation:
+Each bullet point must represent ONE single, atomic accomplishment.
+If a sentence contains multiple accomplishments connected by "and", "while", "also", etc.,
+you MUST split them into separate bullet points.
+
+Examples of atomic separation:
+❌ WRONG: "Led team of 5 engineers and implemented CI/CD pipeline"
+✓ CORRECT:
+  - "Led team of 5 engineers"
+  - "Implemented CI/CD pipeline"
+
+❌ WRONG: "Developed API while mentoring 3 junior developers"
+✓ CORRECT:
+  - "Developed API"
+  - "Mentored 3 junior developers"
 
 Required JSON structure:
 {{
@@ -157,7 +203,7 @@ Required JSON structure:
       "start_date": "Jan 2020",
       "end_date": "Dec 2022" or null,
       "is_current": false,
-      "bullet_points": ["Achievement 1", "Achievement 2"]
+      "bullet_points": ["Atomic achievement 1", "Atomic achievement 2", ...]
     }}
   ],
   "education": [
@@ -177,7 +223,7 @@ Required JSON structure:
       "description": "Brief description",
       "technologies": ["Python", "React"],
       "link": "https://github.com/user/repo",
-      "bullet_points": ["Achievement 1"]
+      "bullet_points": ["Atomic achievement 1", ...]
     }}
   ]
 }}
@@ -186,8 +232,10 @@ Important rules:
 1. For current positions, set "is_current": true and "end_date": null
 2. Extract dates as written (e.g., "Jan 2020", "2020-01")
 3. If GPA is not mentioned, omit the "gpa" field entirely
-4. Preserve bullet points exactly as written (do not modify them)
-5. Return ONLY the JSON object, no markdown formatting or commentary
+4. ATOMICALLY SEPARATE accomplishments - one accomplishment per bullet point
+5. Split compound sentences with "and", "while", "also" into separate bullets
+6. Each bullet should be a complete, standalone statement
+7. Return ONLY the JSON object, no markdown formatting or commentary
 
 Resume text:
 {raw_text}
@@ -200,6 +248,7 @@ Resume text:
     try:
         data = extract_json_from_response(response)
         parsed = ParsedResume(**data)
+        validate_atomic_bullets(parsed)
         return parsed
     except (ValueError, ValidationError) as e:
         # Log the full response for debugging

@@ -47,6 +47,8 @@ Rules:
 3. Be concise and impactful
 4. Preserve technical details and metrics
 5. Return one bullet per line, no numbering or dashes
+6. CRITICAL: Each bullet is already atomic - do NOT merge multiple bullets into one
+7. CRITICAL: Maintain the same number of bullets - one input = one output
 
 Original bullets:
 {bullets_text}
