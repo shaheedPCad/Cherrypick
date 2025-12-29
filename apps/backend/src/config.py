@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
 
+    # Embedding Configuration
+    ollama_embedding_model: str = "llama3"  # Use llama3 for embeddings (4096 dims)
+    chroma_collection_name: str = "resume_bullets"
+    embedding_sync_enabled: bool = True
+    embedding_batch_size: int = 50
+
     # Application
     app_name: str = "Cherrypick API"
     debug: bool = False

@@ -11,9 +11,12 @@ from src.config import settings
 from src.database import close_db, get_db, init_db
 from src.health import ServiceHealth, check_chromadb, check_ollama, check_postgres
 from src.models import Experience
+from src.routers import skills
 from src.schemas.resume import ResumeIngestRequest, ResumeIngestResponse
+from src.services.embeddings import ChromaDBClient
 from src.services.normalizer import normalize_bullet_points
 from src.services.parser import OllamaClient, extract_resume_structure, persist_resume
+from src.services.resync import get_embedding_stats, resync_all_embeddings
 
 
 @asynccontextmanager
@@ -44,13 +47,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(skills.router)
+
 
 @app.get("/")
 async def root():
     return {"message": "Cherrypick API - Ready"}
 
 @app.get("/health")
-async def health_check():
+async def health_check(db: AsyncSession = Depends(get_db)):
     """Comprehensive health check for all service dependencies."""
     # Run all checks concurrently
     postgres_health, chroma_health, ollama_health = await asyncio.gather(
@@ -59,6 +65,16 @@ async def health_check():
         check_ollama(settings.ollama_base_url),
         return_exceptions=True,
     )
+
+    # Check embedding service
+    chroma_client = ChromaDBClient(
+        settings.chroma_base_url,
+        settings.chroma_collection_name
+    )
+    embedding_healthy = await chroma_client.health_check()
+
+    # Get embedding statistics
+    embedding_stats = await get_embedding_stats(db)
 
     # Determine overall status
     all_connected = all(
@@ -85,6 +101,13 @@ async def health_check():
                 if isinstance(ollama_health, ServiceHealth)
                 else "error"
             ),
+            "embeddings": "connected" if embedding_healthy else "disconnected",
+        },
+        "metrics": {
+            "total_bullets": embedding_stats["total_bullets"],
+            "bullets_with_embeddings": embedding_stats["with_embeddings"],
+            "bullets_without_embeddings": embedding_stats["missing_embeddings"],
+            "embedding_coverage_percent": embedding_stats["coverage_percent"],
         },
     }
 
@@ -192,4 +215,28 @@ async def ingest_resume(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error during resume ingestion: {str(e)}"
+        )
+
+
+@app.post("/admin/resync-embeddings")
+async def admin_resync_embeddings(db: AsyncSession = Depends(get_db)):
+    """Resync all missing embeddings (admin endpoint).
+
+    Regenerates embeddings for all bullet points that have NULL embedding_id.
+    Useful for recovering from ChromaDB failures or backfilling old data.
+
+    Returns:
+        Resync statistics including total, success, and error counts
+    """
+    try:
+        stats = await resync_all_embeddings(db)
+        return {
+            "message": "Resync completed",
+            "stats": stats
+        }
+    except Exception as e:
+        print(f"ERROR: Resync failed: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Resync failed: {str(e)}"
         )

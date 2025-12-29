@@ -70,6 +70,7 @@ async def init_db() -> None:
             Job,
             Project,
             ProjectBulletPoint,
+            Skill,
         )
 
         # Create all tables

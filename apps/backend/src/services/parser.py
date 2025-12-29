@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -357,6 +358,46 @@ async def persist_resume(
 
     # Commit all changes (relies on FastAPI dependency for rollback on error)
     await db.commit()
+
+    # NEW: Sync embeddings after commit
+    try:
+        from src.services.embeddings import sync_bullet_point
+
+        # Get all experience bullets created in this session
+        all_bullets = []
+        for exp_data in parsed.experiences:
+            result = await db.execute(
+                select(BulletPoint)
+                .join(Experience)
+                .where(Experience.company_name == exp_data.company_name)
+                .where(Experience.role_title == exp_data.role_title)
+                .order_by(BulletPoint.created_at.desc())
+                .limit(len(exp_data.bullet_points))
+            )
+            all_bullets.extend(result.scalars().all())
+
+        # Get all project bullets created in this session
+        for proj_data in parsed.projects:
+            result = await db.execute(
+                select(ProjectBulletPoint)
+                .join(Project)
+                .where(Project.name == proj_data.name)
+                .order_by(ProjectBulletPoint.created_at.desc())
+                .limit(len(proj_data.bullet_points))
+            )
+            all_bullets.extend(result.scalars().all())
+
+        # Sync embeddings
+        for bullet in all_bullets:
+            success = await sync_bullet_point(bullet, db)
+            if not success:
+                print(f"WARNING: Failed to sync embedding for bullet {bullet.id}")
+
+        await db.commit()  # Commit updated embedding_ids
+
+    except Exception as e:
+        # Log warning but don't fail the entire ingest
+        print(f"WARNING: Embedding sync failed: {e}")
 
     return (
         len(parsed.experiences),
