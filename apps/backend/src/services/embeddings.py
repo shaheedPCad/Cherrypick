@@ -353,9 +353,8 @@ async def sync_bullet_point(
         )
 
         if embedding_id:
-            # Update database record
+            # Update database record (no need to add - already tracked by session)
             bullet.embedding_id = embedding_id
-            db.add(bullet)
             return True
         else:
             return False

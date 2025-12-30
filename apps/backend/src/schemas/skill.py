@@ -7,7 +7,7 @@ batch upload and management endpoints.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class SkillCreate(BaseModel):
@@ -36,13 +36,21 @@ class SkillResponse(BaseModel):
     name: str
     category: str | None
     created_at: datetime
-    has_embedding: bool = Field(
-        description="True if the skill has an associated embedding in ChromaDB"
-    )
+    embedding_id: str | None
 
     class Config:
         """Pydantic config."""
         from_attributes = True
+
+    @computed_field
+    @property
+    def has_embedding(self) -> bool:
+        """Check if skill has an associated embedding.
+
+        Returns:
+            True if the skill has an associated embedding in ChromaDB
+        """
+        return self.embedding_id is not None
 
     @classmethod
     def from_orm_model(cls, skill):
@@ -59,7 +67,7 @@ class SkillResponse(BaseModel):
             name=skill.name,
             category=skill.category,
             created_at=skill.created_at,
-            has_embedding=skill.embedding_id is not None
+            embedding_id=skill.embedding_id
         )
 
 
