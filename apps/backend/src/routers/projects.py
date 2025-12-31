@@ -1,5 +1,6 @@
 """Project CRUD endpoints for Builder API."""
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,14 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import Project
+from src.models import Project, ProjectBulletPoint
 from src.schemas.project import (
     ProjectCreate,
     ProjectResponse,
     ProjectUpdate,
 )
+from src.services.embeddings import delete_bullet_embedding
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
@@ -87,12 +90,39 @@ async def delete_project(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a project (cascade deletes bullet points)."""
+    """Delete a project (cascade deletes bullet points and embeddings)."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await db.delete(project)
-    await db.commit()
+    try:
+        # Fetch all related bullet points BEFORE deletion
+        bullet_result = await db.execute(
+            select(ProjectBulletPoint).where(ProjectBulletPoint.project_id == project_id)
+        )
+        bullets = bullet_result.scalars().all()
+
+        logger.info(f"Deleting project {project_id} with {len(bullets)} bullet points")
+
+        # Delete embeddings for all bullets
+        for bullet in bullets:
+            logger.debug(f"Deleting embedding for bullet {bullet.id}")
+            success = await delete_bullet_embedding(bullet.id)
+            if not success:
+                logger.warning(f"Failed to delete embedding for bullet {bullet.id}")
+
+        # Delete the project (cascade will delete bullets from DB)
+        await db.delete(project)
+        await db.commit()
+
+        logger.info(f"Successfully deleted project {project_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to delete project {project_id}: {e}")
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete project: {str(e)}"
+        )

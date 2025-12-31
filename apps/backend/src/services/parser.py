@@ -6,6 +6,7 @@ to extract structured data from raw resume text and persist it to the database.
 
 import asyncio
 import json
+import logging
 import re
 from typing import Any
 
@@ -24,6 +25,8 @@ from src.models import (
 )
 from src.schemas.resume import ParsedResume
 from src.utils.date_parser import parse_resume_date
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaClient:
@@ -148,12 +151,12 @@ def validate_atomic_bullets(parsed: ParsedResume) -> None:
     for bullet in all_bullets:
         for pattern in compound_patterns:
             if re.search(pattern, bullet, re.IGNORECASE):
-                print(f"WARNING: Potentially non-atomic bullet: {bullet[:100]}")
+                logger.warning(f"Potentially non-atomic bullet: {bullet[:100]}")
                 non_atomic_count += 1
                 break
 
     if non_atomic_count > 0:
-        print(f"WARNING: {non_atomic_count} potentially non-atomic bullets detected.")
+        logger.warning(f"{non_atomic_count} potentially non-atomic bullets detected.")
 
 
 async def extract_resume_structure(
@@ -253,8 +256,8 @@ Resume text:
         return parsed
     except (ValueError, ValidationError) as e:
         # Log the full response for debugging
-        print(f"ERROR: Failed to parse Ollama response: {e}")
-        print(f"Raw response: {response}")
+        logger.error(f"Failed to parse Ollama response: {e}")
+        logger.error(f"Raw response: {response}")
         raise ValueError(
             f"Failed to extract structured data from resume: {str(e)}"
         )
@@ -391,13 +394,13 @@ async def persist_resume(
         for bullet in all_bullets:
             success = await sync_bullet_point(bullet, db)
             if not success:
-                print(f"WARNING: Failed to sync embedding for bullet {bullet.id}")
+                logger.warning(f"Failed to sync embedding for bullet {bullet.id}")
 
         await db.commit()  # Commit updated embedding_ids
 
     except Exception as e:
         # Log warning but don't fail the entire ingest
-        print(f"WARNING: Embedding sync failed: {e}")
+        logger.warning(f"Embedding sync failed: {e}")
 
     return (
         len(parsed.experiences),

@@ -5,6 +5,7 @@ of resume bullet points in ChromaDB using Ollama's nomic-embed-text model.
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.models import BulletPoint, ProjectBulletPoint
+
+logger = logging.getLogger(__name__)
 
 
 class ChromaDBClient:
@@ -196,7 +199,7 @@ async def store_bullet_embedding(
         embedding = await ollama_client.generate_embedding(content)
 
         if not embedding:
-            print(f"WARNING: Empty embedding generated for bullet {bullet_id}")
+            logger.warning(f"Empty embedding generated for bullet {bullet_id}")
             return None
 
         # Store in ChromaDB
@@ -223,7 +226,7 @@ async def store_bullet_embedding(
         return str(bullet_id)
 
     except Exception as e:
-        print(f"ERROR: Failed to store embedding for bullet {bullet_id}: {e}")
+        logger.error(f"Failed to store embedding for bullet {bullet_id}: {e}")
         return None
 
 
@@ -255,7 +258,7 @@ async def update_bullet_embedding(
         embedding = await ollama_client.generate_embedding(new_content)
 
         if not embedding:
-            print(f"WARNING: Empty embedding generated for bullet {bullet_id}")
+            logger.warning(f"Empty embedding generated for bullet {bullet_id}")
             return False
 
         # Update in ChromaDB
@@ -276,7 +279,7 @@ async def update_bullet_embedding(
         return True
 
     except Exception as e:
-        print(f"ERROR: Failed to update embedding for bullet {bullet_id}: {e}")
+        logger.error(f"Failed to update embedding for bullet {bullet_id}: {e}")
         return False
 
 
@@ -312,7 +315,7 @@ async def delete_bullet_embedding(
         return True
 
     except Exception as e:
-        print(f"ERROR: Failed to delete embedding for bullet {bullet_id}: {e}")
+        logger.error(f"Failed to delete embedding for bullet {bullet_id}: {e}")
         return False
 
 
@@ -360,5 +363,5 @@ async def sync_bullet_point(
             return False
 
     except Exception as e:
-        print(f"ERROR: Failed to sync bullet {bullet.id}: {e}")
+        logger.error(f"Failed to sync bullet {bullet.id}: {e}")
         return False
