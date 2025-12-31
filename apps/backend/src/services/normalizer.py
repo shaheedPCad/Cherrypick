@@ -4,7 +4,11 @@ This module provides functionality to transform resume bullet points into
 professional "action-verb" format using Llama 3 via Ollama.
 """
 
+import logging
+
 from src.services.parser import OllamaClient
+
+logger = logging.getLogger(__name__)
 
 
 async def normalize_bullet_points(
@@ -71,8 +75,8 @@ Normalized bullets:
         # Validate we got the same number back
         if len(normalized_batch) != len(batch):
             # Fall back to original if normalization failed
-            print(
-                f"WARNING: Normalization count mismatch. "
+            logger.warning(
+                f"Normalization count mismatch. "
                 f"Expected {len(batch)}, got {len(normalized_batch)}. "
                 f"Using original bullets for this batch."
             )

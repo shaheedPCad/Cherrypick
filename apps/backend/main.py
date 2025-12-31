@@ -11,7 +11,7 @@ from src.config import settings
 from src.database import close_db, get_db, init_db
 from src.health import ServiceHealth, check_chromadb, check_ollama, check_postgres
 from src.models import Experience
-from src.routers import skills
+from src.routers import builder, bullet_points, experiences, projects, skills
 from src.schemas.resume import ResumeIngestRequest, ResumeIngestResponse
 from src.services.embeddings import ChromaDBClient
 from src.services.normalizer import normalize_bullet_points
@@ -49,6 +49,10 @@ app.add_middleware(
 
 # Include routers
 app.include_router(skills.router)
+app.include_router(experiences.router)
+app.include_router(projects.router)
+app.include_router(bullet_points.router)
+app.include_router(builder.router)
 
 
 @app.get("/")

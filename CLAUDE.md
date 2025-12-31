@@ -107,6 +107,38 @@ The Foundation & Infrastructure cycle has been completed and merged to main. All
 - **frontend-design:** Use for generating shadcn/ui components and ensuring clean UX in the dashboard
 - **code-review:** Use to verify SQLAlchemy models, Dockerfile efficiency, and Typst template logic
 
+## Builder API Patterns
+
+When working with the Builder API (manual CRUD operations), follow these conventions:
+
+### Endpoint Organization
+
+- **Experiences**: `/api/v1/experiences` - CRUD for work history entries
+- **Projects**: `/api/v1/projects` - CRUD for project entries
+- **Bullet Points**: `/api/v1/bullet-points` - Unified endpoint for both experience and project bullets
+- **Builder State**: `/api/v1/builder/state` - Full state view for dashboard
+
+### Bullet Point Management
+
+- Bullet points use a unified API with `source_type` field ("experience" or "project")
+- Creating/updating bullets automatically syncs embeddings to ChromaDB
+- Embeddings sync is non-blocking - failures are logged but don't fail the request
+- Deleting an Experience or Project cascade-deletes associated bullets
+
+### Schema Patterns
+
+- **Create schemas**: Include all required fields, no `id` or timestamps
+- **Update schemas**: All fields optional (except `id` in path), use `exclude_unset=True`
+- **Response schemas**: Include full nested relationships (e.g., Experience includes bullet_points list)
+- Use Pydantic v2 with `from_attributes = True` for ORM mapping
+
+### Error Handling
+
+- Return 404 for missing resources
+- Return 201 for successful creation
+- Return 204 for successful deletion
+- Validate parent existence before creating related records (e.g., check Experience exists before creating BulletPoint)
+
 ## Project Structure
 
 ```
