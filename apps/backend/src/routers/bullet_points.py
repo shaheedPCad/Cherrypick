@@ -1,5 +1,6 @@
 """Bullet point CRUD endpoints for Builder API (unified for experience and project)."""
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,9 +14,10 @@ from src.schemas.bullet_point import (
     BulletPointResponse,
     BulletPointUpdateRequest,
 )
-from src.services.embeddings import sync_bullet_point
+from src.services.embeddings import delete_bullet_embedding, sync_bullet_point
 
 router = APIRouter(prefix="/api/v1/bullet-points", tags=["bullet-points"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/", response_model=BulletPointResponse, status_code=201)
@@ -44,13 +46,20 @@ async def create_bullet_point(
     await db.commit()
     await db.refresh(bullet)
 
-    # Auto-sync embedding
+    # Auto-sync embedding with rollback on failure
     try:
         await sync_bullet_point(bullet, db)
         await db.commit()
         await db.refresh(bullet)  # Refresh to load embedding_id
+        logger.info(f"Successfully created bullet {bullet.id} with embedding")
     except Exception as e:
-        print(f"WARNING: Failed to sync embedding for bullet {bullet.id}: {e}")
+        logger.error(f"Failed to sync embedding for bullet {bullet.id}: {e}")
+        # Rollback the bullet creation if embedding sync fails
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create bullet point with embedding: {str(e)}"
+        )
 
     # Convert to response format
     return BulletPointResponse(
@@ -94,13 +103,20 @@ async def update_bullet_point(
     await db.commit()
     await db.refresh(bullet)
 
-    # Auto-sync embedding
+    # Auto-sync embedding if content changed
     try:
         await sync_bullet_point(bullet, db)
         await db.commit()
-        await db.refresh(bullet)  # Refresh to load embedding_id
+        await db.refresh(bullet)  # Refresh to load updated embedding_id
+        logger.info(f"Successfully updated bullet {bullet.id} and embedding")
     except Exception as e:
-        print(f"WARNING: Failed to sync embedding for bullet {bullet.id}: {e}")
+        logger.error(f"Failed to sync embedding for bullet {bullet.id}: {e}")
+        # Rollback the content update if embedding sync fails
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update bullet point with embedding: {str(e)}"
+        )
 
     return BulletPointResponse(
         id=bullet.id,
@@ -118,7 +134,7 @@ async def delete_bullet_point(
     bullet_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a bullet point."""
+    """Delete a bullet point and its embedding."""
     # Try experience bullet first
     result = await db.execute(select(BulletPoint).where(BulletPoint.id == bullet_id))
     bullet = result.scalar_one_or_none()
@@ -131,5 +147,24 @@ async def delete_bullet_point(
     if not bullet:
         raise HTTPException(status_code=404, detail="Bullet point not found")
 
-    await db.delete(bullet)
-    await db.commit()
+    try:
+        # Delete embedding from ChromaDB FIRST
+        logger.info(f"Deleting embedding for bullet {bullet_id}")
+        success = await delete_bullet_embedding(bullet_id)
+
+        if not success:
+            logger.warning(f"Failed to delete embedding for bullet {bullet_id}, continuing with DB deletion")
+
+        # Delete from database
+        await db.delete(bullet)
+        await db.commit()
+
+        logger.info(f"Successfully deleted bullet {bullet_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to delete bullet {bullet_id}: {e}")
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete bullet point: {str(e)}"
+        )

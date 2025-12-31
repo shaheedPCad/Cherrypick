@@ -4,11 +4,15 @@ This module provides admin utilities for resyncing embeddings for bullet points
 that are missing their ChromaDB vectors.
 """
 
+import logging
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import BulletPoint, ProjectBulletPoint
 from src.services.embeddings import sync_bullet_point
+
+logger = logging.getLogger(__name__)
 
 
 async def resync_all_embeddings(db: AsyncSession) -> dict:
@@ -50,7 +54,7 @@ async def resync_all_embeddings(db: AsyncSession) -> dict:
             else:
                 error_count += 1
         except Exception as e:
-            print(f"ERROR syncing bullet {bullet.id}: {e}")
+            logger.error(f"Failed to sync bullet {bullet.id}: {e}")
             error_count += 1
 
     # Commit all updates
