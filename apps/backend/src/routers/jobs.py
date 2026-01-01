@@ -26,7 +26,6 @@ from src.schemas.matchmaker import (
 )
 from src.services.job_analyzer import analyze_job
 from src.services.matchmaker import generate_match_set
-from src.services.skill_embeddings import sync_all_skills
 
 logger = logging.getLogger(__name__)
 
@@ -460,61 +459,3 @@ async def generate_job_match_set(
         )
 
 
-@router.post(
-    "/admin/sync-skill-embeddings",
-    summary="Sync all skill embeddings (ADMIN)"
-)
-async def sync_skill_embeddings_endpoint(
-    db: AsyncSession = Depends(get_db)
-) -> dict:
-    """Sync embeddings for all skills without embeddings (ADMIN).
-
-    Generates vector embeddings for all skills in the database that don't
-    have embeddings yet. This is required before using the matchmaker.
-
-    **Note**: This may take several minutes depending on skill count.
-
-    Args:
-        db: Database session
-
-    Returns:
-        Sync statistics (total, success, errors)
-
-    Raises:
-        HTTPException 503: ChromaDB or Ollama unavailable
-        HTTPException 500: Sync failure
-    """
-    try:
-        logger.info("Starting skill embedding sync")
-        stats = await sync_all_skills(db)
-
-        logger.info(
-            f"Skill embedding sync complete: "
-            f"{stats['success']}/{stats['total']} success, "
-            f"{stats['errors']} errors"
-        )
-
-        return {
-            "message": "Skill embedding sync complete",
-            "stats": stats
-        }
-
-    except Exception as e:
-        logger.error(f"Skill embedding sync failed: {e}")
-
-        error_msg = str(e).lower()
-        if "chroma" in error_msg or "connection" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="ChromaDB unavailable. Ensure vector database is running."
-            )
-        elif "ollama" in error_msg or "embedding" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Ollama unavailable. Ensure Ollama service is running."
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Skill embedding sync failed: {str(e)}"
-        )

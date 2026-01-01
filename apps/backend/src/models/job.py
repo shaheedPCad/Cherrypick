@@ -46,7 +46,7 @@ class Job(Base, TimestampMixin):
         server_default="false",
     )
     analyzed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
