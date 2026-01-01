@@ -25,10 +25,12 @@ class ChromaDBClient:
     """Singleton ChromaDB client manager.
 
     Provides connection management and collection operations for ChromaDB.
+    Supports both bullet points and skills collections.
     """
 
     _instance = None
     _collection: Collection | None = None
+    _skills_collection: Collection | None = None
 
     def __new__(cls, base_url: str | None = None, collection_name: str | None = None):
         """Singleton pattern to reuse ChromaDB connection."""
@@ -92,6 +94,35 @@ class ChromaDBClient:
 
         except Exception as e:
             raise Exception(f"Failed to connect to ChromaDB: {str(e)}")
+
+    async def get_or_create_skills_collection(self) -> Collection:
+        """Get or create the resume skills collection.
+
+        Returns:
+            ChromaDB collection instance for skills
+
+        Raises:
+            Exception: If ChromaDB is unavailable
+        """
+        if self._skills_collection is not None:
+            return self._skills_collection
+
+        try:
+            # Run synchronous ChromaDB operation in thread pool
+            loop = asyncio.get_event_loop()
+
+            def _create_skills_collection():
+                client = self._get_client()
+                return client.get_or_create_collection(
+                    name="resume_skills",
+                    metadata={"description": "Resume skill embeddings"}
+                )
+
+            self._skills_collection = await loop.run_in_executor(None, _create_skills_collection)
+            return self._skills_collection
+
+        except Exception as e:
+            raise Exception(f"Failed to connect to ChromaDB skills collection: {str(e)}")
 
     async def health_check(self) -> bool:
         """Check if ChromaDB is accessible.
