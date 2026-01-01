@@ -139,6 +139,247 @@ When working with the Builder API (manual CRUD operations), follow these convent
 - Return 204 for successful deletion
 - Validate parent existence before creating related records (e.g., check Experience exists before creating BulletPoint)
 
+## Typst PDF Generation (CP-16)
+
+### Overview
+
+The PDF generation system converts tailored resumes (CP-15 output) into professional PDFs using Typst templates. The system is designed for:
+- **Performance**: <2s compilation target
+- **Flexibility**: Easy template modification
+- **Reliability**: Comprehensive error handling
+
+**Architecture Flow:**
+```
+GET /api/v1/generate/preview/{job_id}
+    ↓ Fetch TailoredResume (calls CP-15 /tailor)
+    ↓ convert_to_typst_data() → JSON
+    ↓ Write temp files (data.json + master.typ)
+    ↓ Async: typst compile master.typ output.pdf
+    ↓ Read PDF bytes + cleanup temp files
+    ↓ Return PDF (inline or attachment)
+```
+
+**Key Components:**
+- **Template**: `/apps/backend/templates/master.typ` - Typst markup template
+- **Service**: `/apps/backend/src/services/pdf_generator.py` - Conversion + compilation
+- **Router**: `/apps/backend/src/routers/generate.py` - HTTP endpoints
+
+### Endpoints
+
+#### GET `/api/v1/generate/preview/{job_id}`
+Returns PDF for inline browser preview (opens in new tab/iframe).
+
+**Response:**
+- Content-Type: `application/pdf`
+- Content-Disposition: `inline; filename=preview.pdf`
+
+**Prerequisites:**
+- Job must be analyzed: `POST /jobs/{job_id}/analyze`
+- Resume auto-assembled on demand (calls CP-15 internally)
+
+**Example:**
+```bash
+curl -o preview.pdf http://localhost:8001/api/v1/generate/preview/{job_id}
+# Or open directly in browser:
+# http://localhost:8001/api/v1/generate/preview/{job_id}
+```
+
+#### GET `/api/v1/generate/download/{job_id}`
+Returns PDF for download with clean filename: `FirstName_LastName_CompanyName_Resume.pdf`
+
+**Response:**
+- Content-Type: `application/pdf`
+- Content-Disposition: `attachment; filename="John_Doe_Google_Resume.pdf"`
+
+**Example:**
+```bash
+curl -OJ http://localhost:8001/api/v1/generate/download/{job_id}
+# Downloads as: John_Doe_Google_Resume.pdf
+```
+
+### Modifying the Typst Template
+
+#### Template Location
+`/apps/backend/templates/master.typ`
+
+#### Template Structure
+The template uses Typst's JSON import to load resume data:
+
+```typst
+#let resume_data = json("data.json")
+
+// Access fields:
+#resume_data.candidate_name
+#resume_data.experiences
+#resume_data.skills
+```
+
+#### Available Data Fields
+
+**Personal Info (TODO: Add User model in CP-17):**
+- `candidate_name` (string) - Placeholder: "John Doe"
+- `email` (string) - Placeholder: "john.doe@example.com"
+- `phone` (string) - Placeholder: "+1 (555) 123-4567"
+- `location` (string) - Placeholder: "San Francisco, CA"
+
+**Experiences (array):**
+- `company_name` (string)
+- `role_title` (string)
+- `location` (string)
+- `dates` (string, pre-formatted: "Jan 2024 - Present")
+- `bullet_points` (array of `{content: string}`)
+
+**Projects (array):**
+- `name` (string)
+- `description` (string)
+- `technologies` (array of strings)
+- `link` (string | null)
+- `bullet_points` (array of `{content: string}`)
+
+**Skills (array):**
+- `name` (string)
+
+**Education (array):**
+- `institution` (string)
+- `degree` (string)
+- `field_of_study` (string)
+- `location` (string)
+- `dates` (string, pre-formatted: "Sep 2018 - May 2022")
+- `gpa` (float | null)
+
+#### Common Template Modifications
+
+**1. Change Font:**
+```typst
+#set text(font: "New Computer Modern")  // Default
+#set text(font: "Linux Libertine")     // Alternative serif
+#set text(font: "Roboto")              // Modern sans-serif
+```
+
+**2. Adjust Spacing:**
+```typst
+#set par(leading: 0.65em)  // Line height
+#v(1em)                    // Vertical space
+```
+
+**3. Modify Section Headers:**
+```typst
+#text(size: 14pt, weight: "bold", fill: blue.darken(20%))[EXPERIENCE]
+#line(length: 100%, stroke: 1pt + blue.darken(20%))
+```
+
+**4. Add Custom Fields:**
+Edit `convert_to_typst_data()` in `/apps/backend/src/services/pdf_generator.py`:
+
+```python
+return {
+    "candidate_name": "...",
+    "linkedin_url": "...",  # Add new field
+    # ...
+}
+```
+
+Then use in template:
+```typst
+#link(resume_data.linkedin_url)[LinkedIn]
+```
+
+#### Testing Template Changes
+
+**Quick test workflow:**
+1. Modify `/apps/backend/templates/master.typ`
+2. Restart backend: `docker compose restart backend`
+3. Call preview endpoint: `GET /api/v1/generate/preview/{job_id}`
+4. Check browser preview
+5. Iterate
+
+**Manual Typst compilation (for debugging):**
+```bash
+# Inside Docker container
+docker exec -it engine-backend-1 bash
+
+# Compile manually
+cd /app/templates
+typst compile master.typ test.pdf --root /tmp
+```
+
+### Performance Benchmarks
+
+**Target: <2 seconds per PDF**
+
+**Typical Timings:**
+- JSON conversion: ~10ms
+- Temp file I/O: ~50ms
+- Typst compilation: ~500-1500ms
+- **Total: ~560-1560ms** ✅
+
+**If compilation is slow (>2s):**
+- Check template complexity (heavy fonts, images)
+- Verify `/tmp` is tmpfs (RAM-backed)
+- Review Typst logs: `docker compose logs backend`
+
+### Troubleshooting
+
+#### "Typst template not found"
+**Cause:** Template file missing or wrong path
+
+**Fix:**
+```bash
+# Verify template exists
+ls -la apps/backend/templates/master.typ
+
+# If missing, create directory
+mkdir -p apps/backend/templates
+```
+
+#### "Typst compilation failed"
+**Cause:** Syntax error in template or invalid data
+
+**Fix:**
+1. Check Typst error message in logs: `docker compose logs backend`
+2. Manually test template:
+   ```bash
+   docker exec -it engine-backend-1 bash
+   typst compile /app/templates/master.typ /tmp/test.pdf
+   ```
+3. Validate JSON data structure in `/tmp/typst_*/data.json`
+
+#### "PDF generation timed out (>5s)"
+**Cause:** Template too complex or system overload
+
+**Fix:**
+- Simplify template (remove heavy fonts, images)
+- Increase timeout in `pdf_generator.py`:
+  ```python
+  COMPILE_TIMEOUT = 10.0  # Increase from 5.0
+  ```
+
+#### Empty PDF or missing content
+**Cause:** Incorrect field names or data structure mismatch
+
+**Fix:**
+1. Verify field names match between:
+   - `convert_to_typst_data()` output
+   - Template `resume_data.*` references
+2. Check logs for conversion errors
+3. Inspect temp JSON: Look in `/tmp/typst_*` during debugging
+
+### Future Enhancements (Post-CP-16)
+
+**Planned for CP-17 (User Model):**
+- Add User model with personal info (name, email, phone, location)
+- Remove placeholder values from `convert_to_typst_data()`
+- Support multiple resume templates per user
+
+**Planned for CP-18 (Template Gallery):**
+- Multiple template options (modern, classic, minimal)
+- Template preview endpoint
+- User-selectable templates
+
+**Planned for CP-19 (Workday Assistant):**
+- "Clean Text" export (strips all formatting)
+- Clipboard-ready format for Workday paste
+
 ## Project Structure
 
 ```
