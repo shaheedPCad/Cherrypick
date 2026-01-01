@@ -168,7 +168,7 @@ Your selection:"""
 
     try:
         # Call LLM
-        response = await ollama.generate(prompt, timeout=60)
+        response = await ollama.generate(prompt)
 
         # Parse JSON array from response
         # The LLM might wrap the JSON in markdown code blocks or add extra text
