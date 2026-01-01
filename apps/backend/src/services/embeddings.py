@@ -25,10 +25,12 @@ class ChromaDBClient:
     """Singleton ChromaDB client manager.
 
     Provides connection management and collection operations for ChromaDB.
+    Supports both bullet points and skills collections.
     """
 
     _instance = None
     _collection: Collection | None = None
+    _skills_collection: Collection | None = None
 
     def __new__(cls, base_url: str | None = None, collection_name: str | None = None):
         """Singleton pattern to reuse ChromaDB connection."""
@@ -92,6 +94,35 @@ class ChromaDBClient:
 
         except Exception as e:
             raise Exception(f"Failed to connect to ChromaDB: {str(e)}")
+
+    async def get_or_create_skills_collection(self) -> Collection:
+        """Get or create the resume skills collection.
+
+        Returns:
+            ChromaDB collection instance for skills
+
+        Raises:
+            Exception: If ChromaDB is unavailable
+        """
+        if self._skills_collection is not None:
+            return self._skills_collection
+
+        try:
+            # Run synchronous ChromaDB operation in thread pool
+            loop = asyncio.get_event_loop()
+
+            def _create_skills_collection():
+                client = self._get_client()
+                return client.get_or_create_collection(
+                    name="resume_skills",
+                    metadata={"description": "Resume skill embeddings"}
+                )
+
+            self._skills_collection = await loop.run_in_executor(None, _create_skills_collection)
+            return self._skills_collection
+
+        except Exception as e:
+            raise Exception(f"Failed to connect to ChromaDB skills collection: {str(e)}")
 
     async def health_check(self) -> bool:
         """Check if ChromaDB is accessible.
@@ -365,3 +396,181 @@ async def sync_bullet_point(
     except Exception as e:
         logger.error(f"Failed to sync bullet {bullet.id}: {e}")
         return False
+
+
+async def query_similar_bullets(
+    query_text: str,
+    top_n: int = 15,
+    chroma_client: ChromaDBClient | None = None,
+    ollama_client: OllamaEmbeddingClient | None = None
+) -> list[dict[str, Any]]:
+    """Query ChromaDB for most similar bullet points.
+
+    Uses semantic search to find bullet points most similar to the query text.
+    Generates embedding for query text and searches the resume_bullets collection.
+
+    Args:
+        query_text: Text to find similar bullets for (e.g., job responsibility)
+        top_n: Number of results to return (default 15)
+        chroma_client: Optional ChromaDB client (creates new if None)
+        ollama_client: Optional Ollama client (creates new if None)
+
+    Returns:
+        List of matches with structure:
+        [
+            {
+                "bullet_id": UUID,
+                "content": str,
+                "similarity_score": float,  # 0-1, higher is better
+                "source_type": "experience" | "project",
+                "source_id": UUID
+            },
+            ...
+        ]
+
+    Raises:
+        Exception: If ChromaDB or Ollama are unavailable
+    """
+    try:
+        # Initialize clients if not provided
+        if chroma_client is None:
+            chroma_client = ChromaDBClient()
+        if ollama_client is None:
+            ollama_client = OllamaEmbeddingClient()
+
+        # Generate embedding for query text
+        query_embedding = await ollama_client.generate_embedding(query_text)
+
+        if not query_embedding:
+            logger.warning("Empty embedding generated for query text")
+            return []
+
+        # Get bullets collection
+        collection = await chroma_client.get_or_create_collection()
+
+        # Run synchronous ChromaDB query in thread pool
+        loop = asyncio.get_event_loop()
+
+        def _query_bullets():
+            return collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_n,
+                include=["documents", "metadatas", "distances"]
+            )
+
+        results = await loop.run_in_executor(None, _query_bullets)
+
+        # Parse results into structured format
+        matches = []
+        if results and results["ids"] and len(results["ids"]) > 0:
+            ids = results["ids"][0]
+            documents = results["documents"][0]
+            metadatas = results["metadatas"][0]
+            distances = results["distances"][0]
+
+            for i, bullet_id_str in enumerate(ids):
+                # Convert distance to similarity score (1 - distance for cosine)
+                # ChromaDB uses L2 distance by default, normalize to 0-1
+                similarity_score = 1.0 - min(distances[i], 1.0)
+
+                matches.append({
+                    "bullet_id": UUID(bullet_id_str),
+                    "content": documents[i],
+                    "similarity_score": similarity_score,
+                    "source_type": metadatas[i].get("source_type", ""),
+                    "source_id": UUID(metadatas[i].get("source_id", "00000000-0000-0000-0000-000000000000"))
+                })
+
+        logger.info(f"Found {len(matches)} similar bullets for query")
+        return matches
+
+    except Exception as e:
+        logger.error(f"Failed to query similar bullets: {e}")
+        raise
+
+
+async def query_similar_skills(
+    query_text: str,
+    top_n: int = 20,
+    chroma_client: ChromaDBClient | None = None,
+    ollama_client: OllamaEmbeddingClient | None = None
+) -> list[dict[str, Any]]:
+    """Query ChromaDB for most similar skills.
+
+    Uses semantic search to find skills most similar to the query text.
+    Generates embedding for query text and searches the resume_skills collection.
+
+    Args:
+        query_text: Text to find similar skills for (e.g., skill name from JD)
+        top_n: Number of results to return (default 20)
+        chroma_client: Optional ChromaDB client (creates new if None)
+        ollama_client: Optional Ollama client (creates new if None)
+
+    Returns:
+        List of matches with structure:
+        [
+            {
+                "skill_id": UUID,
+                "name": str,
+                "category": str | None,
+                "similarity_score": float  # 0-1, higher is better
+            },
+            ...
+        ]
+
+    Raises:
+        Exception: If ChromaDB or Ollama are unavailable
+    """
+    try:
+        # Initialize clients if not provided
+        if chroma_client is None:
+            chroma_client = ChromaDBClient()
+        if ollama_client is None:
+            ollama_client = OllamaEmbeddingClient()
+
+        # Generate embedding for query text
+        query_embedding = await ollama_client.generate_embedding(query_text)
+
+        if not query_embedding:
+            logger.warning("Empty embedding generated for query text")
+            return []
+
+        # Get skills collection
+        collection = await chroma_client.get_or_create_skills_collection()
+
+        # Run synchronous ChromaDB query in thread pool
+        loop = asyncio.get_event_loop()
+
+        def _query_skills():
+            return collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_n,
+                include=["metadatas", "distances"]
+            )
+
+        results = await loop.run_in_executor(None, _query_skills)
+
+        # Parse results into structured format
+        matches = []
+        if results and results["ids"] and len(results["ids"]) > 0:
+            ids = results["ids"][0]
+            metadatas = results["metadatas"][0]
+            distances = results["distances"][0]
+
+            for i, skill_id_str in enumerate(ids):
+                # Convert distance to similarity score (1 - distance for cosine)
+                similarity_score = 1.0 - min(distances[i], 1.0)
+
+                matches.append({
+                    "skill_id": UUID(skill_id_str),
+                    "name": metadatas[i].get("name", ""),
+                    "category": metadatas[i].get("category", "") or None,
+                    "similarity_score": similarity_score
+                })
+
+        logger.info(f"Found {len(matches)} similar skills for query")
+        return matches
+
+    except Exception as e:
+        logger.error(f"Failed to query similar skills: {e}")
+        raise

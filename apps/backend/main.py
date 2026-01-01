@@ -11,7 +11,7 @@ from src.config import settings
 from src.database import close_db, get_db, init_db
 from src.health import ServiceHealth, check_chromadb, check_ollama, check_postgres
 from src.models import Experience
-from src.routers import builder, bullet_points, experiences, projects, skills
+from src.routers import builder, bullet_points, experiences, jobs, projects, skills
 from src.schemas.resume import ResumeIngestRequest, ResumeIngestResponse
 from src.services.embeddings import ChromaDBClient
 from src.services.normalizer import normalize_bullet_points
@@ -53,6 +53,7 @@ app.include_router(experiences.router)
 app.include_router(projects.router)
 app.include_router(bullet_points.router)
 app.include_router(builder.router)
+app.include_router(jobs.router)
 
 
 @app.get("/")
@@ -243,4 +244,54 @@ async def admin_resync_embeddings(db: AsyncSession = Depends(get_db)):
         raise HTTPException(
             status_code=500,
             detail=f"Resync failed: {str(e)}"
+        )
+
+
+@app.post("/admin/sync-skill-embeddings")
+async def admin_sync_skill_embeddings(db: AsyncSession = Depends(get_db)):
+    """Sync embeddings for all skills without embeddings (ADMIN).
+
+    Generates vector embeddings for all skills in the database that don't
+    have embeddings yet. This is required before using the matchmaker.
+
+    Note: This may take several minutes depending on skill count.
+
+    Returns:
+        Sync statistics (total, success, errors)
+    """
+    try:
+        from src.services.skill_embeddings import sync_all_skills
+
+        print("Starting skill embedding sync...")
+        stats = await sync_all_skills(db)
+
+        print(
+            f"Skill embedding sync complete: "
+            f"{stats['success']}/{stats['total']} success, "
+            f"{stats['errors']} errors"
+        )
+
+        return {
+            "message": "Skill embedding sync complete",
+            "stats": stats
+        }
+
+    except Exception as e:
+        print(f"ERROR: Skill embedding sync failed: {type(e).__name__}: {e}")
+
+        error_msg = str(e).lower()
+        if "chroma" in error_msg or "connection" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="ChromaDB unavailable. Ensure vector database is running."
+            )
+        elif "ollama" in error_msg or "embedding" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Ollama unavailable. Ensure Ollama service is running."
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Skill embedding sync failed: {str(e)}"
         )
