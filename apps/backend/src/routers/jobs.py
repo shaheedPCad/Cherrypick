@@ -1,7 +1,9 @@
 """Jobs API router.
 
 This module provides REST endpoints for job management, analysis, and matching.
-Implements the core RAG retrieval logic for CP-14 (Semantic Matchmaker).
+Implements:
+- CP-14: Semantic Matchmaker (top 15 bullets + top 20 skills)
+- CP-15: Cherrypicker & Assembler (LLM-powered bullet selection, final resume assembly)
 """
 
 import logging
@@ -24,8 +26,12 @@ from src.schemas.matchmaker import (
     MatchSetResponse,
     SkillMatchResponse,
 )
+from src.schemas.tailored_resume import TailoredResumeResponse
+from src.services.assembler import assemble_tailored_resume
+from src.services.cherrypicker import cherrypick_bullets
 from src.services.job_analyzer import analyze_job
 from src.services.matchmaker import generate_match_set
+from src.services.parser import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -459,3 +465,120 @@ async def generate_job_match_set(
         )
 
 
+@router.post(
+    "/{job_id}/tailor",
+    response_model=TailoredResumeResponse,
+    summary="Generate tailored resume (CP-15 MAIN FEATURE)",
+    status_code=status.HTTP_200_OK
+)
+async def tailor_resume_for_job(
+    job_id: UUID,
+    db: AsyncSession = Depends(get_db)
+) -> TailoredResumeResponse:
+    """Generate tailored resume by cherry-picking bullets (CP-15 main feature).
+
+    **What this does:**
+    1. Fetches match set from CP-14 (top 15 bullets, top 20 skills)
+    2. Uses LLM to select 3-5 most relevant bullets per experience/project
+    3. Checks for redundancy (no duplicate accomplishments)
+    4. Assembles complete resume with full metadata
+
+    **Prerequisites:**
+    - Job must be analyzed: POST /jobs/{job_id}/analyze
+    - Match set auto-generated if needed (calls CP-14 internally)
+
+    **Output:**
+    - Nested experiences/projects with 3-5 selected bullets each
+    - Flat list of top 20 skills
+    - All education entries
+    - Ready for Typst rendering
+
+    Args:
+        job_id: Job UUID
+        db: Database session
+
+    Returns:
+        TailoredResumeResponse with selected content
+
+    Raises:
+        HTTPException 404: Job not found
+        HTTPException 400: Job not analyzed
+        HTTPException 503: Ollama/ChromaDB unavailable
+        HTTPException 500: Tailoring failure
+    """
+    try:
+        # Step 1: Generate match set (calls CP-14)
+        logger.info(f"Generating match set for job {job_id}")
+        match_set = await generate_match_set(job_id, db)
+
+        # Step 2: Fetch job for context
+        result = await db.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one_or_none()
+
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+
+        # Step 3: Cherry-pick bullets with LLM
+        logger.info(f"Cherry-picking bullets for job {job_id}")
+        ollama = OllamaClient()
+        cherrypicker_result = await cherrypick_bullets(
+            match_set=match_set,
+            job_description=job.raw_description,
+            ollama=ollama
+        )
+
+        # Step 4: Assemble tailored resume
+        logger.info(f"Assembling tailored resume for job {job_id}")
+        tailored_resume = await assemble_tailored_resume(
+            job_id=job_id,
+            match_set=match_set,
+            cherrypicker_result=cherrypicker_result,
+            db=db
+        )
+
+        logger.info(
+            f"Tailored resume generated for job {job_id}: "
+            f"{tailored_resume.total_bullets_selected} bullets, "
+            f"{tailored_resume.total_skills_selected} skills, "
+            f"{len(tailored_resume.experiences)} experiences, "
+            f"{len(tailored_resume.projects)} projects"
+        )
+
+        return tailored_resume
+
+    except ValueError as e:
+        # Job not found or not analyzed (from matchmaker or assembler)
+        error_msg = str(e)
+        if "not found" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_msg
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg
+            )
+    except Exception as e:
+        logger.error(f"Failed to tailor resume for job {job_id}: {e}")
+
+        # Check for service availability errors
+        error_msg = str(e).lower()
+        if "ollama" in error_msg or "timeout" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Ollama unavailable. Ensure Ollama service is running."
+            )
+        elif "chroma" in error_msg or "connection" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="ChromaDB unavailable. Ensure vector database is running."
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Resume tailoring failed: {str(e)}"
+        )
