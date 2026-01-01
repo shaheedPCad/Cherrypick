@@ -8,7 +8,7 @@ skill matching in the matchmaker service.
 import logging
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import Skill
@@ -50,7 +50,7 @@ async def find_exact_skill_matches(
         if len(conditions) == 1:
             stmt = select(Skill.id).where(conditions[0])
         else:
-            stmt = select(Skill.id).where(func.or_(*conditions))
+            stmt = select(Skill.id).where(or_(*conditions))
 
         result = await db.execute(stmt)
         skill_ids = result.scalars().all()
