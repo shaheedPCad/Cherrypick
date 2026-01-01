@@ -47,9 +47,10 @@ async def find_exact_skill_matches(
         conditions = [func.lower(Skill.name) == skill_name.lower() for skill_name in skill_names]
 
         # Execute query with OR conditions
-        stmt = select(Skill.id).where(
-            *[cond for cond in conditions] if len(conditions) == 1 else func.or_(*conditions)
-        )
+        if len(conditions) == 1:
+            stmt = select(Skill.id).where(conditions[0])
+        else:
+            stmt = select(Skill.id).where(func.or_(*conditions))
 
         result = await db.execute(stmt)
         skill_ids = result.scalars().all()
