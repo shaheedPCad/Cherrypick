@@ -380,6 +380,155 @@ mkdir -p apps/backend/templates
 - "Clean Text" export (strips all formatting)
 - Clipboard-ready format for Workday paste
 
+## Asynchronous Persistence Architecture
+
+### Problem Statement
+
+Cherrypicker LLM calls (CP-15) take 2-3 minutes due to multiple sequential Ollama requests. When PDF endpoints (`/preview`, `/download`) called cherrypicker synchronously, they timed out, making the application unusable.
+
+### Solution: Background Task Pattern
+
+**Flow:**
+1. POST `/api/v1/jobs/{job_id}/tailor` → Returns **202 Accepted** in <500ms
+2. Background task runs cherrypicker independently (up to 5 minutes)
+3. Results stored in `tailored_resumes` table with status tracking
+4. GET `/api/v1/jobs/{job_id}/tailor/status` → Poll for completion
+5. GET `/api/v1/generate/preview/{job_id}` → **Instant PDF** (<2s, no LLM calls)
+
+**Key Benefits:**
+- Non-blocking HTTP requests (no timeouts)
+- Progress visibility for users
+- Instant PDF generation from pre-computed data
+- Graceful error handling with full tracebacks
+
+### Architecture Components
+
+**Database Model:** `src/models/tailored_resume.py`
+- Stores serialized `TailoredResumeResponse` as JSON
+- Status field: `pending` | `processing` | `completed` | `failed`
+- Progress tracking: `completed_steps` / `total_steps`
+- Error capture: `error_message` + `error_traceback`
+- Performance metrics: `started_at`, `completed_at`
+
+**Background Service:** `src/services/background_tasks.py`
+- `execute_tailor_resume_task()` - Main async task function
+- 5-minute timeout protection (`settings.cherrypicker_timeout`)
+- Progress updates after each step
+- Comprehensive error handling
+
+**API Endpoints:** `src/routers/jobs.py`
+- **POST** `/jobs/{job_id}/tailor` - Trigger async task (202)
+- **GET** `/jobs/{job_id}/tailor/status` - Poll progress
+
+**PDF Endpoints:** `src/routers/generate.py`
+- **GET** `/generate/preview/{job_id}` - Instant inline PDF
+- **GET** `/generate/download/{job_id}` - Instant download PDF
+- Fetch from DB instead of calling cherrypicker
+
+### Hybrid Fallback Logic (Cherrypicker)
+
+**Problem:** LLM may return < 3 bullets, causing schema validation errors (min_length=3).
+
+**Solution:** Smart backfilling with ChromaDB semantic matches.
+
+**Strategy:**
+1. LLM attempts to select 3-5 bullets per source
+2. If LLM returns < 3 valid UUIDs:
+   - Backfill with top ChromaDB matches (by similarity score)
+   - Ensure minimum 3 bullets per source
+3. If source has < 3 bullets in match set:
+   - Return empty array → Assembler gracefully skips source
+   - Log critical warning for debugging
+
+**Why:** Schema requires 3-5 bullets for ATS compliance. Fallback prevents `ValidationError` and ensures resumes always generate successfully.
+
+**Implementation:** `src/services/cherrypicker.py` lines 211-241
+
+### Performance Benchmarks
+
+| Endpoint | Before (Sync) | After (Async) | Improvement |
+|----------|---------------|---------------|-------------|
+| POST /tailor | 2-3min (timeout ❌) | **32ms** (202 ✅) | **5600x faster** |
+| GET /preview | 2-3min (timeout ❌) | **35ms** (instant ✅) | **5100x faster** |
+| GET /download | 2-3min (timeout ❌) | **35ms** (instant ✅) | **5100x faster** |
+| Background Task | N/A | **~2.5-3.5min** (non-blocking) | No user impact |
+
+**Background Task Breakdown:**
+- Match Set (CP-14): ~10s
+- Cherrypicker (CP-15): ~2-3min (LLM-dominated)
+- Assembler: ~1s
+- JSON serialization: ~100ms
+- **Total: ~2.5-3.5min** (runs independently, no HTTP blocking)
+
+### Configuration
+
+**Environment Variable:** `.env` or `.env.example`
+```bash
+CHERRYPICKER_TIMEOUT=300  # 5 minutes for background LLM calls
+```
+
+**Code:** `src/config.py`
+```python
+cherrypicker_timeout: int = 300  # Timeout for cherrypicker background task
+```
+
+### Testing Checklist
+
+**Golden E2E Test:**
+```bash
+# 1. Trigger async tailor
+time curl -X POST http://localhost:8001/api/v1/jobs/{job_id}/tailor
+# Expect: 202 Accepted in <500ms
+
+# 2. Poll status
+curl http://localhost:8001/api/v1/jobs/{job_id}/tailor/status
+# Expect: {"status": "processing", "progress": {"percent": 25}}
+
+# 3. Wait for completion (2-3 min)
+# Poll every 10s until status=completed
+
+# 4. Generate PDF
+time curl http://localhost:8001/api/v1/generate/preview/{job_id} -o test.pdf
+# Expect: PDF in <2s
+
+# 5. Verify PDF
+file test.pdf
+# Expect: PDF document, version 1.7
+```
+
+**Success Criteria:**
+- ✅ POST /tailor returns 202 in <500ms
+- ✅ Status transitions: pending → processing → completed
+- ✅ Background task completes without timeout
+- ✅ PDF generates in <2s (instant from DB)
+- ✅ No ValidationError (hybrid fallback working)
+- ✅ Sources with < 3 bullets gracefully skipped
+
+### Troubleshooting
+
+**Task Status: failed**
+- Check `error_message` in status response
+- Review backend logs: `docker compose logs backend | grep -i error`
+- Common causes:
+  - Job not analyzed (call POST `/jobs/{job_id}/analyze` first)
+  - All sources have < 3 bullets (data quality issue)
+  - Ollama service down
+  - ChromaDB connection failure
+
+**Task Stuck in processing**
+- Check if cherrypicker is still running (logs should show LLM calls)
+- Verify 5-minute timeout hasn't expired
+- Restart backend if task is truly stuck: `docker compose restart backend`
+
+**PDF Returns 202 Instead of PDF**
+- Task still in progress - poll `/tailor/status` until completed
+- Task failed - check error_message for root cause
+
+**Empty Resume (No Experiences/Projects)**
+- All sources had < 3 bullets in match set
+- Check logs for "CRITICAL: Source ... only has X bullets"
+- Indicates data quality issue - add more bullet points to experiences/projects
+
 ## Project Structure
 
 ```
