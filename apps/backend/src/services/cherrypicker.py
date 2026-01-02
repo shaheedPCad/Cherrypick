@@ -157,12 +157,14 @@ Select 3-5 bullets that are:
 3. Highest impact for this specific role
 
 CONSTRAINTS:
-- You MUST select between 3 and 5 bullets (inclusive)
+- You MUST select EXACTLY 3, 4, or 5 bullets (no more, no less)
+- MINIMUM: 3 bullets (mandatory for ATS compliance)
+- MAXIMUM: 5 bullets (keep resume concise)
 - NO duplicate or overlapping accomplishments
 - Consider similarity scores but prioritize relevance and diversity
 
 Return ONLY a JSON array of bullet IDs, like this:
-["uuid1", "uuid2", "uuid3"]
+["uuid1", "uuid2", "uuid3", "uuid4"]
 
 Your selection:"""
 
@@ -186,11 +188,20 @@ Your selection:"""
         if len(selected_ids) < 3 or len(selected_ids) > 5:
             logger.warning(
                 f"LLM returned {len(selected_ids)} bullets for {source_type}, "
-                f"expected 3-5. Using fallback strategy."
+                f"expected 3-5. Using hybrid fallback strategy."
             )
-            # Fallback: take top 5 by similarity
+            # Fallback: take top bullets by similarity
             sorted_bullets = sorted(bullets, key=lambda b: b.similarity_score, reverse=True)
-            return [b.bullet_id for b in sorted_bullets[:5]]
+
+            # Return empty if < 3 bullets available (signal to skip source)
+            if len(sorted_bullets) < 3:
+                logger.error(
+                    f"CRITICAL: Only {len(sorted_bullets)} bullets available for {source_type}. "
+                    f"Cannot satisfy minimum. Returning empty array to skip source."
+                )
+                return []
+
+            return [b.bullet_id for b in sorted_bullets[:min(5, len(sorted_bullets))]]
 
         # Convert to UUIDs and validate they exist in bullets
         valid_bullet_ids = {b.bullet_id for b in bullets}
@@ -206,14 +217,44 @@ Your selection:"""
             except (ValueError, AttributeError) as e:
                 logger.warning(f"Failed to parse bullet ID '{id_str}': {e}")
 
-        # If we don't have 3-5 valid IDs, use fallback
-        if len(result) < 3 or len(result) > 5:
+        # HYBRID FALLBACK: Backfill with top ChromaDB matches if < 3 valid bullets
+        if len(result) < 3:
             logger.warning(
                 f"After validation, only {len(result)} valid bullets for {source_type}. "
-                f"Using fallback."
+                f"Applying hybrid fallback (backfilling from ChromaDB matches)..."
             )
+
+            # Already selected bullets
+            result_set = set(result)
             sorted_bullets = sorted(bullets, key=lambda b: b.similarity_score, reverse=True)
-            return [b.bullet_id for b in sorted_bullets[:5]]
+
+            # Backfill with top-scored bullets until we reach minimum 3
+            for bullet in sorted_bullets:
+                if bullet.bullet_id not in result_set:
+                    result.append(bullet.bullet_id)
+                    result_set.add(bullet.bullet_id)
+
+                if len(result) >= 3:
+                    break  # Stop at minimum required
+
+            # If source has < 3 bullets total, we have a data problem
+            if len(result) < 3:
+                logger.error(
+                    f"CRITICAL: Source {source_type} only has {len(bullets)} bullets in match set. "
+                    f"Cannot satisfy 3-bullet minimum. Returning empty array to skip source."
+                )
+                return []  # Signal to assembler to skip this source entirely
+
+            logger.info(
+                f"Hybrid fallback successful: backfilled {len(result)} bullets for {source_type}"
+            )
+
+        # Cap at 5 maximum (in case LLM returned more than 5 valid IDs)
+        if len(result) > 5:
+            logger.warning(
+                f"Validation resulted in {len(result)} bullets, capping at 5"
+            )
+            result = result[:5]
 
         return result
 
@@ -221,7 +262,16 @@ Your selection:"""
         logger.error(f"Failed to parse LLM selection for {source_type}: {e}")
         logger.error(f"Raw LLM response: {response[:500] if 'response' in locals() else 'N/A'}")
 
-        # Fallback: take top 5 by similarity
-        logger.info(f"Using fallback strategy (top 5 by similarity) for {source_type}")
+        # Fallback: take top bullets by similarity (up to 5, or all if < 3 available)
+        logger.info(f"Using fallback strategy (top similarity scores) for {source_type}")
         sorted_bullets = sorted(bullets, key=lambda b: b.similarity_score, reverse=True)
-        return [b.bullet_id for b in sorted_bullets[:5]]
+
+        # Return empty array if < 3 bullets available (signal to skip source)
+        if len(sorted_bullets) < 3:
+            logger.error(
+                f"CRITICAL: Only {len(sorted_bullets)} bullets available for {source_type}. "
+                f"Cannot satisfy minimum. Returning empty array to skip source."
+            )
+            return []
+
+        return [b.bullet_id for b in sorted_bullets[:min(5, len(sorted_bullets))]]
