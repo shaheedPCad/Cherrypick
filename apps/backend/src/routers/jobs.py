@@ -9,12 +9,13 @@ Implements:
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import BulletPoint, Job, ProjectBulletPoint, Skill
+from src.models import BulletPoint, Job, ProjectBulletPoint, Skill, TailoredResume
+from src.services.background_tasks import execute_tailor_resume_task
 from src.schemas.job import (
     JobAnalysisResponse,
     JobCreate,
@@ -467,51 +468,50 @@ async def generate_job_match_set(
 
 @router.post(
     "/{job_id}/tailor",
-    response_model=TailoredResumeResponse,
-    summary="Generate tailored resume (CP-15 MAIN FEATURE)",
-    status_code=status.HTTP_200_OK
+    summary="Trigger tailored resume generation (CP-15 ASYNC)",
+    status_code=status.HTTP_202_ACCEPTED
 )
-async def tailor_resume_for_job(
+async def trigger_tailor_resume(
     job_id: UUID,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
-) -> TailoredResumeResponse:
-    """Generate tailored resume by cherry-picking bullets (CP-15 main feature).
+) -> dict:
+    """Trigger tailored resume generation as background task (returns immediately).
 
-    **What this does:**
-    1. Fetches match set from CP-14 (top 15 bullets, top 20 skills)
-    2. Uses LLM to select 3-5 most relevant bullets per experience/project
-    3. Checks for redundancy (no duplicate accomplishments)
-    4. Assembles complete resume with full metadata
+    **Async Pattern:**
+    This endpoint returns 202 Accepted immediately and launches the expensive
+    cherrypicker LLM operation (2-3 minutes) in the background. This prevents
+    HTTP timeout errors.
+
+    **How it works:**
+    1. Creates TailoredResume record with status="pending"
+    2. Launches background task (non-blocking)
+    3. Returns job_id and status immediately (<500ms)
+    4. Client polls GET /jobs/{job_id}/tailor/status for progress
+    5. Client fetches PDF via GET /generate/preview/{job_id} when completed
 
     **Prerequisites:**
     - Job must be analyzed: POST /jobs/{job_id}/analyze
-    - Match set auto-generated if needed (calls CP-14 internally)
 
-    **Output:**
-    - Nested experiences/projects with 3-5 selected bullets each
-    - Flat list of top 20 skills
-    - All education entries
-    - Ready for Typst rendering
+    **Idempotency:**
+    - If tailored resume already exists and completed → returns existing
+    - If tailored resume already in progress → returns in-progress status
+    - If tailored resume failed → deletes and retries
 
     Args:
         job_id: Job UUID
+        background_tasks: FastAPI background task manager
         db: Database session
 
     Returns:
-        TailoredResumeResponse with selected content
+        Dict with job_id, status, and message
 
     Raises:
         HTTPException 404: Job not found
         HTTPException 400: Job not analyzed
-        HTTPException 503: Ollama/ChromaDB unavailable
-        HTTPException 500: Tailoring failure
     """
     try:
-        # Step 1: Generate match set (calls CP-14)
-        logger.info(f"Generating match set for job {job_id}")
-        match_set = await generate_match_set(job_id, db)
-
-        # Step 2: Fetch job for context
+        # Verify job exists and is analyzed
         result = await db.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one_or_none()
 
@@ -521,64 +521,127 @@ async def tailor_resume_for_job(
                 detail=f"Job {job_id} not found"
             )
 
-        # Step 3: Cherry-pick bullets with LLM
-        logger.info(f"Cherry-picking bullets for job {job_id}")
-        ollama = OllamaClient()
-        cherrypicker_result = await cherrypick_bullets(
-            match_set=match_set,
-            job_description=job.raw_description,
-            ollama=ollama
-        )
-
-        # Step 4: Assemble tailored resume
-        logger.info(f"Assembling tailored resume for job {job_id}")
-        tailored_resume = await assemble_tailored_resume(
-            job_id=job_id,
-            match_set=match_set,
-            cherrypicker_result=cherrypicker_result,
-            db=db
-        )
-
-        logger.info(
-            f"Tailored resume generated for job {job_id}: "
-            f"{tailored_resume.total_bullets_selected} bullets, "
-            f"{tailored_resume.total_skills_selected} skills, "
-            f"{len(tailored_resume.experiences)} experiences, "
-            f"{len(tailored_resume.projects)} projects"
-        )
-
-        return tailored_resume
-
-    except ValueError as e:
-        # Job not found or not analyzed (from matchmaker or assembler)
-        error_msg = str(e)
-        if "not found" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_msg
-            )
-        else:
+        if not job.is_analyzed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_msg
+                detail="Job not analyzed. Call POST /jobs/{job_id}/analyze first."
             )
+
+        # Check if tailored resume already exists
+        existing = await db.execute(
+            select(TailoredResume).where(TailoredResume.job_id == job_id)
+        )
+        existing_resume = existing.scalar_one_or_none()
+
+        if existing_resume:
+            if existing_resume.status == "completed":
+                return {
+                    "job_id": str(job_id),
+                    "status": "completed",
+                    "message": "Tailored resume already exists"
+                }
+            elif existing_resume.status in ["pending", "processing"]:
+                return {
+                    "job_id": str(job_id),
+                    "status": existing_resume.status,
+                    "message": "Tailoring already in progress"
+                }
+            else:  # failed - retry
+                await db.delete(existing_resume)
+                await db.commit()
+
+        # Create new tailored resume record
+        new_resume = TailoredResume(
+            job_id=job_id,
+            status="pending",
+            total_steps=4,
+            completed_steps=0
+        )
+        db.add(new_resume)
+        await db.commit()
+
+        # Launch background task
+        background_tasks.add_task(execute_tailor_resume_task, job_id)
+
+        logger.info(f"Launched background tailor task for job {job_id}")
+
+        return {
+            "job_id": str(job_id),
+            "status": "pending",
+            "message": "Tailored resume generation started. Poll /jobs/{job_id}/tailor/status for progress."
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to tailor resume for job {job_id}: {e}")
-
-        # Check for service availability errors
-        error_msg = str(e).lower()
-        if "ollama" in error_msg or "timeout" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Ollama unavailable. Ensure Ollama service is running."
-            )
-        elif "chroma" in error_msg or "connection" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="ChromaDB unavailable. Ensure vector database is running."
-            )
-
+        logger.error(f"Failed to trigger tailor task for job {job_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Resume tailoring failed: {str(e)}"
+            detail=f"Failed to trigger tailoring: {str(e)}"
         )
+
+
+@router.get(
+    "/{job_id}/tailor/status",
+    summary="Get tailored resume generation status",
+    status_code=status.HTTP_200_OK
+)
+async def get_tailor_status(
+    job_id: UUID,
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Get tailored resume generation status and progress.
+
+    **Use this to poll for completion** after calling POST /jobs/{job_id}/tailor.
+
+    **Status values:**
+    - "pending": Task queued, not yet started
+    - "processing": LLM operations in progress
+    - "completed": Ready for PDF generation
+    - "failed": Error occurred (see error field)
+
+    **Progress tracking:**
+    - completed_steps/total_steps (typically 0-4)
+    - current_step: Human-readable description
+    - percent: Progress percentage (0-100)
+
+    Args:
+        job_id: Job UUID
+        db: Database session
+
+    Returns:
+        Dict with status, progress, timing info, and error (if failed)
+
+    Raises:
+        HTTPException 404: No tailored resume found
+    """
+    result = await db.execute(
+        select(TailoredResume).where(TailoredResume.job_id == job_id)
+    )
+    resume = result.scalar_one_or_none()
+
+    if not resume:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No tailored resume found. Call POST /jobs/{job_id}/tailor first."
+        )
+
+    return {
+        "job_id": str(job_id),
+        "status": resume.status,
+        "progress": {
+            "completed_steps": resume.completed_steps,
+            "total_steps": resume.total_steps,
+            "current_step": resume.current_step,
+            "percent": round(
+                (resume.completed_steps / resume.total_steps * 100)
+                if resume.total_steps
+                else 0
+            ),
+        },
+        "error": resume.error_message if resume.status == "failed" else None,
+        "started_at": resume.started_at.isoformat() if resume.started_at else None,
+        "completed_at": (
+            resume.completed_at.isoformat() if resume.completed_at else None
+        ),
+    }

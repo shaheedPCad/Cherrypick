@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     embedding_sync_enabled: bool = True
     embedding_batch_size: int = 50
 
+    # Background Task Configuration
+    cherrypicker_timeout: int = 300  # 5 minutes for LLM operations
+
     # Application
     app_name: str = "Cherrypick API"
     debug: bool = False
