@@ -145,8 +145,11 @@ async def _assemble_experiences(
     for exp in experiences:
         selected_bullet_ids = selections.get(exp.id, [])
 
-        if not selected_bullet_ids:
-            logger.debug(f"Skipping experience {exp.id} (no bullets selected)")
+        if not selected_bullet_ids or len(selected_bullet_ids) == 0:
+            logger.info(
+                f"Skipping experience {exp.id} (cherrypicker returned empty - "
+                f"insufficient bullets in match set or data quality issue)"
+            )
             continue  # CRITICAL: Skip experiences with no bullets
 
         # Fetch bullets (batch query)
@@ -224,8 +227,11 @@ async def _assemble_projects(
     for proj in projects:
         selected_bullet_ids = selections.get(proj.id, [])
 
-        if not selected_bullet_ids:
-            logger.debug(f"Skipping project {proj.id} (no bullets selected)")
+        if not selected_bullet_ids or len(selected_bullet_ids) == 0:
+            logger.info(
+                f"Skipping project {proj.id} (cherrypicker returned empty - "
+                f"insufficient bullets in match set or data quality issue)"
+            )
             continue  # CRITICAL: Skip projects with no bullets
 
         # Fetch project bullets (batch query)
