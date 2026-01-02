@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 TYPST_BINARY = "/usr/local/bin/typst"
-TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "master.typ"
+TEMPLATE_PATH = Path(__file__).parent.parent.parent / "templates" / "master.typ"
 COMPILE_TIMEOUT = 5.0  # 5s max (generous buffer for 2s target)
 
 
@@ -192,10 +192,16 @@ async def generate_pdf(resume: TailoredResumeResponse) -> bytes:
 
         # Paths for temp files
         data_json_path = tmpdir_path / "data.json"
+        template_copy_path = tmpdir_path / "master.typ"
         output_pdf_path = tmpdir_path / "resume.pdf"
 
         try:
-            # Step 1: Convert and write JSON data
+            # Step 1: Copy template to temp directory
+            # (Typst requires template to be within project root)
+            import shutil
+            shutil.copy2(TEMPLATE_PATH, template_copy_path)
+
+            # Step 2: Convert and write JSON data
             typst_data = convert_to_typst_data(resume)
             data_json_path.write_text(
                 json.dumps(typst_data, indent=2),
@@ -204,12 +210,12 @@ async def generate_pdf(resume: TailoredResumeResponse) -> bytes:
 
             logger.debug(f"Wrote resume data to {data_json_path}")
 
-            # Step 2: Execute Typst compiler
+            # Step 3: Execute Typst compiler
             # Command: typst compile master.typ resume.pdf --root <tmpdir>
             process = await asyncio.create_subprocess_exec(
                 TYPST_BINARY,
                 "compile",
-                str(TEMPLATE_PATH),
+                str(template_copy_path),
                 str(output_pdf_path),
                 "--root", str(tmpdir_path),  # Set root for data.json lookup
                 stdout=asyncio.subprocess.PIPE,
